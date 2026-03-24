@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2.0,
+  "id": "WebScenarioStatusBoard",
+  "name": "Web Scenario Status Board",
+  "version": "1.0",
+  "namespace": "WebScenarioStatusBoard",
+  "description": "Visual board for Web Scenario step response codes by host group.",
+  "author": "MAAV",
+  "actions": {
+    "web.scenario.status.board": {
+      "class": "WebScenarioBoardAction",
+      "view": "view"
+    }
+  }
+}
