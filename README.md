@@ -1,4 +1,10 @@
 # WebScenarioStatusBoard — Module Configuration
+<img width="1636" height="826" alt="image" src="https://github.com/user-attachments/assets/2d634de7-d58a-4a88-a664-bd2574aa7526" />
+
+<img width="1092" height="856" alt="image" src="https://github.com/user-attachments/assets/d77b198b-1b5c-4923-9036-2914bae9d6b8" />
+
+<img width="726" height="94" alt="image" src="https://github.com/user-attachments/assets/006f5d9c-f650-43a7-9af9-d39593bdb92e" />
+
 
 This document explains the minimal configuration required to install and use the WebScenarioStatusBoard module in Zabbix. It covers how to set the API URL and the `apiToken` in the configuration file.
 
