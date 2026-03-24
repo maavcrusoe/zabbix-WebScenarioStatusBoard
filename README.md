@@ -1,4 +1,7 @@
 # WebScenarioStatusBoard — Module Configuration
+
+A lightweight Zabbix module that provides a clean, customizable dashboard to visualize all your monitored websites, grouped by Group ID — similar to Uptime Kuma.
+
 <img width="1636" height="826" alt="image" src="https://github.com/user-attachments/assets/2d634de7-d58a-4a88-a664-bd2574aa7526" />
 
 <img width="1092" height="856" alt="image" src="https://github.com/user-attachments/assets/d77b198b-1b5c-4923-9036-2914bae9d6b8" />
