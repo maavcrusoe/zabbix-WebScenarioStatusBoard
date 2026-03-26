@@ -7,13 +7,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalTitle = document.getElementById('wsb-modal-title');
   const modalBody = document.getElementById('wsb-modal-body');
   const globalTimeframeSelect = document.getElementById('wsb-global-timeframe');
+  const refreshToggleBtn = document.getElementById('wsb-refresh-toggle');
   const filterButtons = document.querySelectorAll('.wsb-filter-btn');
+  const columnsToggleBtn = document.getElementById('wsb-columns-toggle');
+  const columnsPanel = document.getElementById('wsb-columns-panel');
+  const columnCheckboxes = document.querySelectorAll('[data-column-toggle]');
 
   if (!root || !timer || !modal || !modalBody || !modalTitle) {
     return;
   }
 
   initSparkTooltips();
+  initColumnVisibilityControls();
 
   const TIMEFRAMES = [
     { value: '1h', label: '1h' },
@@ -38,14 +43,68 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const refreshInterval = parseInt(root.dataset.refreshInterval || '0', 10);
+  const autoRefreshStorageKey = 'wsb:autoRefreshEnabled';
   let remaining = refreshInterval;
+  let refreshTimerId = null;
+  let refreshInProgress = false;
+  let autoRefreshEnabled = refreshInterval > 0;
   let activeRowData = null;
-  let activeTimeframe = '1h';
+  let activeTimeframe = globalTimeframeSelect ? String(globalTimeframeSelect.value || '1h') : '1h';
   let requestToken = 0;
 
+  try {
+    const savedAutoRefresh = window.localStorage.getItem(autoRefreshStorageKey);
+    if (savedAutoRefresh !== null) {
+      autoRefreshEnabled = savedAutoRefresh === '1' && refreshInterval > 0;
+    }
+  }
+  catch (e) {
+    // Ignore localStorage failures.
+  }
+
+  updateAutoRefreshUi();
+
+  try {
+    const savedTimeframe = String(window.localStorage.getItem('wsb:timeframe') || '');
+    if (globalTimeframeSelect && savedTimeframe) {
+      const validOption = Array.from(globalTimeframeSelect.options).some((opt) => opt.value === savedTimeframe);
+      if (validOption) {
+        globalTimeframeSelect.value = savedTimeframe;
+        activeTimeframe = savedTimeframe;
+      }
+    }
+  }
+  catch (e) {
+    // Ignore localStorage failures.
+  }
+
   if (refreshInterval > 0) {
-    setInterval(() => {
+    const refreshGuardMs = Math.max(3000, Math.min(30000, refreshInterval * 500));
+
+    try {
+      const lastRefreshAt = Number(window.sessionStorage.getItem('wsb:lastRefreshAt') || '0');
+      const elapsed = Date.now() - lastRefreshAt;
+
+      if (Number.isFinite(lastRefreshAt) && elapsed >= 0 && elapsed < refreshGuardMs) {
+        // If page was just reloaded, restart countdown instead of reloading again immediately.
+        remaining = refreshInterval;
+      }
+    }
+    catch (e) {
+      // Ignore sessionStorage failures.
+    }
+
+    refreshTimerId = window.setInterval(() => {
       if (modal.classList.contains('open')) {
+        return;
+      }
+
+      if (!autoRefreshEnabled) {
+        timer.textContent = 'OFF';
+        return;
+      }
+
+      if (refreshInProgress) {
         return;
       }
 
@@ -53,9 +112,42 @@ document.addEventListener('DOMContentLoaded', () => {
       timer.textContent = String(remaining);
 
       if (remaining <= 0) {
-        window.location.reload();
+        triggerScheduledRefresh();
       }
     }, 1000);
+  }
+  else {
+    timer.textContent = 'OFF';
+  }
+
+  if (refreshToggleBtn) {
+    refreshToggleBtn.addEventListener('click', () => {
+      if (refreshInterval <= 0) {
+        return;
+      }
+
+      autoRefreshEnabled = !autoRefreshEnabled;
+
+      if (autoRefreshEnabled && remaining <= 0) {
+        remaining = refreshInterval;
+      }
+
+      if (!autoRefreshEnabled) {
+        timer.textContent = 'OFF';
+      }
+      else {
+        timer.textContent = String(Math.max(1, remaining));
+      }
+
+      try {
+        window.localStorage.setItem(autoRefreshStorageKey, autoRefreshEnabled ? '1' : '0');
+      }
+      catch (e) {
+        // Ignore localStorage failures.
+      }
+
+      updateAutoRefreshUi();
+    });
   }
 
   filterButtons.forEach((btn) => {
@@ -68,6 +160,26 @@ document.addEventListener('DOMContentLoaded', () => {
       applyTableFilter(filter);
     });
   });
+
+  if (globalTimeframeSelect) {
+    globalTimeframeSelect.addEventListener('change', () => {
+      const selected = String(globalTimeframeSelect.value || '1h');
+      activeTimeframe = selected;
+
+      try {
+        window.localStorage.setItem('wsb:timeframe', selected);
+      }
+      catch (e) {
+        // Ignore localStorage failures.
+      }
+
+      if (activeRowData && modal.classList.contains('open')) {
+        loadAndRenderSeries(activeRowData, activeTimeframe);
+      }
+
+      reloadForGlobalTimeframe(selected);
+    });
+  }
 
   document.querySelectorAll('.wsb-row-clickable').forEach((row) => {
     row.addEventListener('click', async () => {
@@ -134,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Instant data path for 1h (preloaded server-side to avoid empty charts).
     if (timeframe === '1h') {
       const preload = {
-        timeframe: '1h',
+        timeframe,
         rsp: Array.isArray(rowData.rsp) ? rowData.rsp : [],
         time: Array.isArray(rowData.time) ? rowData.time : [],
         download: Array.isArray(rowData.download) ? rowData.download : []
@@ -241,6 +353,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         activeTimeframe = item.value;
+        if (globalTimeframeSelect) {
+          globalTimeframeSelect.value = activeTimeframe;
+        }
         await loadAndRenderSeries(activeRowData, activeTimeframe);
       });
 
@@ -269,7 +384,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const series = rawSeries
       .map((p) => ({ clock: Number(p.clock), value: Number(p.value) }))
-      .filter((p) => Number.isFinite(p.clock) && Number.isFinite(p.value));
+      .filter((p) => Number.isFinite(p.clock) && Number.isFinite(p.value))
+      .sort((a, b) => a.clock - b.clock);
 
     if (series.length === 0) {
       const empty = document.createElement('div');
@@ -636,7 +752,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       rows.forEach((row) => {
         const bucket = row.getAttribute('data-bucket') || '0';
-        const show = filter === 'all' || bucket === filter;
+        const status = row.getAttribute('data-status') || 'unknown';
+        const show = filter === 'all'
+          || (filter === 'unknown' && status === 'unknown')
+          || bucket === filter;
         row.style.display = show ? '' : 'none';
 
         if (show) {
@@ -646,5 +765,160 @@ document.addEventListener('DOMContentLoaded', () => {
 
       card.style.display = visibleRows > 0 ? '' : 'none';
     });
+  }
+
+  function triggerScheduledRefresh() {
+    if (!autoRefreshEnabled) {
+      return;
+    }
+
+    if (refreshInProgress) {
+      return;
+    }
+
+    refreshInProgress = true;
+
+    if (refreshTimerId !== null) {
+      window.clearInterval(refreshTimerId);
+      refreshTimerId = null;
+    }
+
+    timer.textContent = '0';
+
+    try {
+      window.sessionStorage.setItem('wsb:lastRefreshAt', String(Date.now()));
+    }
+    catch (e) {
+      // Ignore sessionStorage failures.
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete('mode');
+    window.location.replace(url.toString());
+  }
+
+  function updateAutoRefreshUi() {
+    if (!refreshToggleBtn) {
+      return;
+    }
+
+    if (refreshInterval <= 0) {
+      refreshToggleBtn.textContent = 'Auto-refresh: N/A';
+      refreshToggleBtn.disabled = true;
+      refreshToggleBtn.classList.remove('is-on');
+      refreshToggleBtn.classList.add('is-off');
+      refreshToggleBtn.setAttribute('aria-pressed', 'false');
+      return;
+    }
+
+    refreshToggleBtn.disabled = false;
+    refreshToggleBtn.textContent = autoRefreshEnabled ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
+    refreshToggleBtn.classList.toggle('is-on', autoRefreshEnabled);
+    refreshToggleBtn.classList.toggle('is-off', !autoRefreshEnabled);
+    refreshToggleBtn.setAttribute('aria-pressed', autoRefreshEnabled ? 'true' : 'false');
+  }
+
+  function initColumnVisibilityControls() {
+    if (!columnCheckboxes.length) {
+      return;
+    }
+
+    const storageKey = 'wsb:columns';
+    let savedConfig = {};
+
+    try {
+      savedConfig = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    }
+    catch (e) {
+      savedConfig = {};
+    }
+
+    columnCheckboxes.forEach((checkbox) => {
+      const col = checkbox.getAttribute('data-column-toggle') || '';
+      if (!col) {
+        return;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(savedConfig, col)) {
+        checkbox.checked = !!savedConfig[col];
+      }
+
+      applyColumnVisibility(col, checkbox.checked);
+
+      checkbox.addEventListener('change', () => {
+        applyColumnVisibility(col, checkbox.checked);
+        persistColumns(storageKey);
+      });
+    });
+
+    if (!columnsToggleBtn || !columnsPanel) {
+      return;
+    }
+
+    columnsToggleBtn.addEventListener('click', () => {
+      const isOpen = !columnsPanel.hasAttribute('hidden');
+      if (isOpen) {
+        columnsPanel.setAttribute('hidden', 'hidden');
+        columnsToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+      else {
+        columnsPanel.removeAttribute('hidden');
+        columnsToggleBtn.setAttribute('aria-expanded', 'true');
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (columnsPanel.hasAttribute('hidden')) {
+        return;
+      }
+
+      const target = event.target;
+      if (target === columnsPanel || columnsPanel.contains(target) || target === columnsToggleBtn) {
+        return;
+      }
+
+      columnsPanel.setAttribute('hidden', 'hidden');
+      columnsToggleBtn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function applyColumnVisibility(column, visible) {
+    if (!column) {
+      return;
+    }
+
+    const cells = document.querySelectorAll(`[data-col="${column}"]`);
+    cells.forEach((cell) => {
+      cell.style.display = visible ? '' : 'none';
+    });
+  }
+
+  function persistColumns(storageKey) {
+    const payload = {};
+    columnCheckboxes.forEach((checkbox) => {
+      const col = checkbox.getAttribute('data-column-toggle') || '';
+      if (!col) {
+        return;
+      }
+
+      payload[col] = checkbox.checked;
+    });
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+    }
+    catch (e) {
+      // Ignore localStorage failures.
+    }
+  }
+
+  function reloadForGlobalTimeframe(timeframe) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('timeframe', timeframe);
+    if (!url.searchParams.get('action')) {
+      url.searchParams.set('action', 'web.scenario.status.board');
+    }
+    url.searchParams.delete('mode');
+    window.location.href = url.toString();
   }
 });

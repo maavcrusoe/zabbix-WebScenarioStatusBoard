@@ -2,5 +2,5 @@
   "apiUrl": "http://localhost:8080/api_jsonrpc.php",
   "apiToken": "baf3e3117df320d9bb76c3cbefaf2bff47ad1015882cc9a7e82e1c0d8a7d2689",
   "groupIdsMacro": "{$GROUPIDS}",
-  "refreshIntervalSeconds": 60
+  "refreshIntervalSeconds": 10
 }

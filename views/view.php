@@ -4,6 +4,7 @@
 $rows = $data['rows'] ?? [];
 $chartData = $data['chartData'] ?? [];
 $refreshInterval = (int)($data['refreshInterval'] ?? 60);
+$selectedTimeframe = (string)($data['selectedTimeframe'] ?? '1h');
 $generatedAt = $data['generatedAt'] ?? '-';
 $summary = $data['summary'] ?? ['ok' => 0, 'redirect' => 0, 'client' => 0, 'server' => 0, 'unknown' => 0];
 $debug = $data['debug'] ?? ['webitems_total' => 0, 'rsp_mapped' => 0, 'time_mapped' => 0, 'download_mapped' => 0];
@@ -21,16 +22,37 @@ echo '</div>';
 echo '<div class="wsb-toolbar">';
 echo '  <label for="wsb-global-timeframe">Intervalo grafica:</label>';
 echo '  <select id="wsb-global-timeframe" class="wsb-global-timeframe">';
-echo '    <option value="1h" selected>1h</option>';
-echo '    <option value="3h">3h</option>';
-echo '    <option value="6h">6h</option>';
-echo '    <option value="12h">12h</option>';
-echo '    <option value="1d">1d</option>';
-echo '    <option value="2d">2d</option>';
-echo '    <option value="1w">1 semana</option>';
-echo '    <option value="2w">2 semanas</option>';
-echo '    <option value="1m">1 mes</option>';
+$timeframeOptions = [
+    '1h' => '1h',
+    '3h' => '3h',
+    '6h' => '6h',
+    '12h' => '12h',
+    '1d' => '1d',
+    '2d' => '2d',
+    '1w' => '1 semana',
+    '2w' => '2 semanas',
+    '1m' => '1 mes'
+];
+
+foreach ($timeframeOptions as $value => $label) {
+    $selectedAttr = $value === $selectedTimeframe ? ' selected' : '';
+    echo '    <option value="' . htmlspecialchars($value) . '"' . $selectedAttr . '>' . htmlspecialchars($label) . '</option>';
+}
 echo '  </select>';
+echo '  <button type="button" id="wsb-refresh-toggle" class="wsb-refresh-toggle" aria-pressed="true">Auto-refresh: ON</button>';
+echo '  <div class="wsb-columns-config">';
+echo '    <button type="button" id="wsb-columns-toggle" class="wsb-columns-toggle" aria-expanded="false">Columnas</button>';
+echo '    <div id="wsb-columns-panel" class="wsb-columns-panel" hidden>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="host" checked> Host</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="tags" checked> Etiquetas</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="scenario" checked> Scenario</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="step" checked> Step</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="url" checked> URL</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="uptime" checked> Uptime</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="status" checked> Status</label>';
+echo '      <label class="wsb-columns-item"><input type="checkbox" data-column-toggle="lastcheck" checked> Last Check</label>';
+echo '    </div>';
+echo '  </div>';
 echo '</div>';
 
 echo '<div class="wsb-summary">';
@@ -47,6 +69,7 @@ echo '  <button type="button" class="wsb-filter-btn" data-filter="200">200</butt
 echo '  <button type="button" class="wsb-filter-btn" data-filter="300">300</button>';
 echo '  <button type="button" class="wsb-filter-btn" data-filter="400">400</button>';
 echo '  <button type="button" class="wsb-filter-btn" data-filter="500">500</button>';
+echo '  <button type="button" class="wsb-filter-btn" data-filter="unknown">Unknown</button>';
 echo '</div>';
 
 echo '<div class="wsb-debug">';
@@ -78,13 +101,14 @@ foreach ($groupedRows as $groupName => $rowsInGroup) {
     echo '<div class="wsb-table-wrap">';
     echo '<table class="wsb-table">';
     echo '<thead><tr>';
-    echo '<th>Host</th>';
-    echo '<th>Scenario</th>';
-    echo '<th>Step</th>';
-    echo '<th>URL</th>';
-    echo '<th>Uptime</th>';
-    echo '<th>Status</th>';
-    echo '<th>Last Check</th>';
+    echo '<th data-col="host">Host</th>';
+    echo '<th data-col="tags">Etiquetas</th>';
+    echo '<th data-col="scenario">Scenario</th>';
+    echo '<th data-col="step">Step</th>';
+    echo '<th data-col="url">URL</th>';
+    echo '<th data-col="uptime">Uptime</th>';
+    echo '<th data-col="status">Status</th>';
+    echo '<th data-col="lastcheck">Last Check</th>';
     echo '</tr></thead>';
     echo '<tbody>';
 
@@ -111,18 +135,36 @@ foreach ($groupedRows as $groupName => $rowsInGroup) {
         $statusBucket = (string)(intdiv((int)$code, 100) * 100);
     }
 
-    echo '<tr class="wsb-row-clickable" data-row-id="' . htmlspecialchars($row['rowid']) . '" data-code="' . htmlspecialchars((string)($code ?? '')) . '" data-bucket="' . htmlspecialchars($statusBucket) . '">';
-    echo '<td>' . htmlspecialchars($row['host']) . '</td>';
-    echo '<td>' . htmlspecialchars($row['scenario']) . '</td>';
-    echo '<td>' . htmlspecialchars($row['step']) . '</td>';
-    $url = (string)($row['url'] ?? '-');
-    if ($url !== '-' && preg_match('/^https?:\/\//i', $url)) {
-        echo '<td class="wsb-url"><a href="' . htmlspecialchars($url) . '" target="_blank" rel="noopener noreferrer">' . htmlspecialchars($url) . '</a></td>';
+    echo '<tr class="wsb-row-clickable" data-row-id="' . htmlspecialchars($row['rowid']) . '" data-code="' . htmlspecialchars((string)($code ?? '')) . '" data-bucket="' . htmlspecialchars($statusBucket) . '" data-status="' . htmlspecialchars($status) . '">';
+    echo '<td data-col="host">' . htmlspecialchars($row['host']) . '</td>';
+    $hostTags = is_array($row['host_tags'] ?? null) ? $row['host_tags'] : [];
+    echo '<td data-col="tags" class="wsb-tags">';
+    if (empty($hostTags)) {
+        echo '<span class="wsb-tags-empty">-</span>';
     }
     else {
-        echo '<td class="wsb-url">' . htmlspecialchars($url) . '</td>';
+        foreach ($hostTags as $tag) {
+            $tagName = trim((string)($tag['tag'] ?? ''));
+            if ($tagName === '') {
+                continue;
+            }
+
+            $tagValue = trim((string)($tag['value'] ?? ''));
+            $tagText = $tagName . ($tagValue !== '' ? ': ' . $tagValue : '');
+            echo '<span class="wsb-tag-chip">' . htmlspecialchars($tagText) . '</span>';
+        }
     }
-    echo '<td>';
+    echo '</td>';
+    echo '<td data-col="scenario">' . htmlspecialchars($row['scenario']) . '</td>';
+    echo '<td data-col="step">' . htmlspecialchars($row['step']) . '</td>';
+    $url = (string)($row['url'] ?? '-');
+    if ($url !== '-' && preg_match('/^https?:\/\//i', $url)) {
+        echo '<td data-col="url" class="wsb-url"><a href="' . htmlspecialchars($url) . '" target="_blank" rel="noopener noreferrer">' . htmlspecialchars($url) . '</a></td>';
+    }
+    else {
+        echo '<td data-col="url" class="wsb-url">' . htmlspecialchars($url) . '</td>';
+    }
+    echo '<td data-col="uptime">';
     echo '<div class="spark-wrap">';
 
     $spark = $row['spark'] ?? [];
@@ -168,8 +210,8 @@ foreach ($groupedRows as $groupName => $rowsInGroup) {
 
     echo '</div>';
     echo '</td>';
-    echo '<td><span class="status status-' . htmlspecialchars($status) . '">' . htmlspecialchars((string)($code ?? '-')) . ' ' . $statusLabel . '</span></td>';
-    echo '<td>' . htmlspecialchars($row['lastcheck']) . '</td>';
+    echo '<td data-col="status"><span class="status status-' . htmlspecialchars($status) . '">' . htmlspecialchars((string)($code ?? '-')) . ' ' . $statusLabel . '</span></td>';
+    echo '<td data-col="lastcheck">' . htmlspecialchars($row['lastcheck']) . '</td>';
     echo '</tr>';
 }
 

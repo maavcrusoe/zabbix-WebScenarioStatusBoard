@@ -30,6 +30,8 @@ class WebScenarioBoardAction extends CController {
         $apiUrl = $config['apiUrl'] ?? '';
         $apiToken = $config['apiToken'] ?? '';
         $refreshInterval = (int)($config['refreshIntervalSeconds'] ?? 60);
+        $selectedTimeframe = (string)($_REQUEST['timeframe'] ?? '1h');
+        $selectedTimeframeSeconds = $this->timeframeToSeconds($selectedTimeframe);
 
         if ($apiUrl === '' || $apiToken === '') {
             echo 'Config incompleta: revisa apiUrl y apiToken en el modulo.';
@@ -61,6 +63,8 @@ class WebScenarioBoardAction extends CController {
         $hosts = $this->zabbixApiRequest($apiUrl, $apiToken, 'host.get', [
             'output' => ['hostid', 'name'],
             'selectHostGroups' => ['groupid', 'name'],
+            'selectTags' => ['tag', 'value'],
+            'selectParentTemplates' => ['templateid', 'name'],
             'groupids' => $groupids,
             'filter' => ['status' => 0]
         ]);
@@ -78,10 +82,59 @@ class WebScenarioBoardAction extends CController {
         $hostIds = array_column($hosts, 'hostid');
         $hostNameById = [];
         $hostGroupsByHostId = [];
+        $hostTagsByHostId = [];
+        $templateIdsByHostId = [];
 
         foreach ($hosts as $host) {
-            $hostNameById[$host['hostid']] = $host['name'];
-            $hostGroupsByHostId[$host['hostid']] = $host['hostgroups'] ?? [];
+            $hostId = (string)$host['hostid'];
+            $hostNameById[$hostId] = $host['name'];
+            $hostGroupsByHostId[$hostId] = $host['hostgroups'] ?? [];
+            $hostTagsByHostId[$hostId] = is_array($host['tags'] ?? null) ? $host['tags'] : [];
+
+            $templateIdsByHostId[$hostId] = [];
+            foreach (($host['parentTemplates'] ?? []) as $tpl) {
+                $tplId = (string)($tpl['templateid'] ?? '');
+                if ($tplId !== '' && ctype_digit($tplId)) {
+                    $templateIdsByHostId[$hostId][$tplId] = true;
+                }
+            }
+        }
+
+        $allTemplateIds = [];
+        foreach ($templateIdsByHostId as $templateIdsMap) {
+            foreach (array_keys($templateIdsMap) as $templateId) {
+                $allTemplateIds[$templateId] = true;
+            }
+        }
+
+        $templateTagsByTemplateId = [];
+        if (!empty($allTemplateIds)) {
+            $templates = $this->zabbixApiRequest($apiUrl, $apiToken, 'template.get', [
+                'output' => ['templateid'],
+                'templateids' => array_values(array_keys($allTemplateIds)),
+                'selectTags' => ['tag', 'value']
+            ]);
+
+            foreach ($templates as $template) {
+                $templateId = (string)($template['templateid'] ?? '');
+                if ($templateId === '') {
+                    continue;
+                }
+
+                $templateTagsByTemplateId[$templateId] = is_array($template['tags'] ?? null)
+                    ? $template['tags']
+                    : [];
+            }
+        }
+
+        $hostEffectiveTagsByHostId = [];
+        foreach ($hostIds as $hostId) {
+            $hostId = (string)$hostId;
+            $hostEffectiveTagsByHostId[$hostId] = $this->mergeHostAndTemplateTags(
+                $hostTagsByHostId[$hostId] ?? [],
+                $templateIdsByHostId[$hostId] ?? [],
+                $templateTagsByTemplateId
+            );
         }
 
         $scenarios = $this->zabbixApiRequest($apiUrl, $apiToken, 'httptest.get', [
@@ -201,6 +254,7 @@ class WebScenarioBoardAction extends CController {
                     'hostid' => (string)$hostId,
                     'group' => $groupName,
                     'host' => $hostName,
+                    'host_tags' => $hostEffectiveTagsByHostId[(string)$hostId] ?? [],
                     'scenario' => $scenarioName,
                     'step' => $stepName,
                     'url' => $expandedUrl,
@@ -215,7 +269,7 @@ class WebScenarioBoardAction extends CController {
             }
         }
 
-        $timeFrom = time() - 3600;
+        $timeFrom = time() - $selectedTimeframeSeconds;
         $rspHistory = $this->loadHistorySeriesBatch($apiUrl, $apiToken, $rspItemDefs, $timeFrom, 30);
         $timeHistory = $this->loadHistorySeriesBatch($apiUrl, $apiToken, $timeItemDefs, $timeFrom, 120);
         $downloadHistory = $this->loadHistorySeriesBatch($apiUrl, $apiToken, $downloadItemDefs, $timeFrom, 120);
@@ -294,6 +348,7 @@ class WebScenarioBoardAction extends CController {
             'rows' => $rows,
             'chartData' => $chartData,
             'refreshInterval' => max(10, $refreshInterval),
+            'selectedTimeframe' => $selectedTimeframe,
             'generatedAt' => date('Y-m-d H:i:s'),
             'summary' => $summary,
             'debug' => $debug
@@ -539,6 +594,8 @@ class WebScenarioBoardAction extends CController {
     private function respondHistory(string $apiUrl, string $apiToken): void {
         $timeframe = (string)($_REQUEST['timeframe'] ?? '1h');
         $seconds = $this->timeframeToSeconds($timeframe);
+        $historyLimitPerItem = max(360, min(5000, (int)ceil($seconds / 60) + 60));
+        $trendsLimitPerItem = max(48, min(1000, (int)ceil($seconds / 3600) + 24));
 
         $timeItemId = (string)($_REQUEST['time_itemid'] ?? '');
         $downloadItemId = (string)($_REQUEST['download_itemid'] ?? '');
@@ -579,7 +636,30 @@ class WebScenarioBoardAction extends CController {
         }
 
         $itemDefs = $this->getItemDefsByIds($apiUrl, $apiToken, $requestedIds);
-        $seriesByItem = $this->loadHistorySeriesBatch($apiUrl, $apiToken, $itemDefs, time() - $seconds, 360);
+        $seriesByItem = $this->loadHistorySeriesBatch($apiUrl, $apiToken, $itemDefs, time() - $seconds, $historyLimitPerItem);
+
+        $missingForTrends = [];
+        foreach ($requestedIds as $itemId) {
+            if (!isset($seriesByItem[$itemId]) || empty($seriesByItem[$itemId])) {
+                $missingForTrends[$itemId] = true;
+            }
+        }
+
+        if (!empty($missingForTrends)) {
+            $trendSeriesByItem = $this->loadTrendSeriesBatch(
+                $apiUrl,
+                $apiToken,
+                array_values(array_keys($missingForTrends)),
+                time() - $seconds,
+                $trendsLimitPerItem
+            );
+
+            foreach ($trendSeriesByItem as $itemId => $series) {
+                if (!empty($series)) {
+                    $seriesByItem[$itemId] = $series;
+                }
+            }
+        }
 
         // Fallback for installations with sparse history/time windows.
         foreach ($requestedIds as $itemId) {
@@ -818,6 +898,57 @@ class WebScenarioBoardAction extends CController {
         return $result;
     }
 
+    private function loadTrendSeriesBatch(string $apiUrl, string $apiToken, array $itemIds, int $timeFrom, int $limitPerItem): array {
+        if (empty($itemIds)) {
+            return [];
+        }
+
+        $trendRows = $this->zabbixApiRequest($apiUrl, $apiToken, 'trend.get', [
+            'output' => ['itemid', 'clock', 'value_avg'],
+            'itemids' => array_values(array_unique($itemIds)),
+            'time_from' => $timeFrom,
+            'sortfield' => 'clock',
+            'sortorder' => 'DESC',
+            'limit' => min(200000, max(500, count($itemIds) * $limitPerItem * 2))
+        ]);
+
+        if (empty($trendRows)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($trendRows as $point) {
+            $itemId = (string)($point['itemid'] ?? '');
+            if ($itemId === '') {
+                continue;
+            }
+
+            if (!isset($result[$itemId])) {
+                $result[$itemId] = [];
+            }
+
+            if (count($result[$itemId]) >= $limitPerItem) {
+                continue;
+            }
+
+            $value = $point['value_avg'] ?? null;
+            if (!is_numeric($value)) {
+                continue;
+            }
+
+            $result[$itemId][] = [
+                'clock' => (int)($point['clock'] ?? 0),
+                'value' => $value
+            ];
+        }
+
+        foreach ($result as $itemId => $series) {
+            $result[$itemId] = array_reverse($series);
+        }
+
+        return $result;
+    }
+
     private function resolveMainGroupName(array $groups, array $groupNameById): string {
         foreach ($groups as $group) {
             $groupId = $group['groupid'] ?? null;
@@ -830,6 +961,55 @@ class WebScenarioBoardAction extends CController {
         }
 
         return 'Sin grupo';
+    }
+
+    private function mergeHostAndTemplateTags(array $hostTags, array $templateIdsMap, array $templateTagsByTemplateId): array {
+        $combined = [];
+
+        foreach ($hostTags as $tag) {
+            $normalized = $this->normalizeTag($tag);
+            if ($normalized === null) {
+                continue;
+            }
+
+            $key = $normalized['tag'] . '\u0001' . $normalized['value'];
+            $combined[$key] = $normalized;
+        }
+
+        foreach (array_keys($templateIdsMap) as $templateId) {
+            foreach (($templateTagsByTemplateId[$templateId] ?? []) as $tag) {
+                $normalized = $this->normalizeTag($tag);
+                if ($normalized === null) {
+                    continue;
+                }
+
+                $key = $normalized['tag'] . '\u0001' . $normalized['value'];
+                $combined[$key] = $normalized;
+            }
+        }
+
+        $result = array_values($combined);
+        usort($result, static function(array $a, array $b): int {
+            return [$a['tag'], $a['value']] <=> [$b['tag'], $b['value']];
+        });
+
+        return $result;
+    }
+
+    private function normalizeTag($tag): ?array {
+        if (!is_array($tag)) {
+            return null;
+        }
+
+        $name = trim((string)($tag['tag'] ?? ''));
+        if ($name === '') {
+            return null;
+        }
+
+        return [
+            'tag' => $name,
+            'value' => trim((string)($tag['value'] ?? ''))
+        ];
     }
 
     private function classifyHttpCode(?int $code): string {
